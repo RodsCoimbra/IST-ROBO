@@ -2,6 +2,7 @@ import curses
 import matplotlib.pyplot as plt
 import numpy as np
 import time
+import os
 
 # Constants
 DELTA_T = 0.1  # Time interval in seconds
@@ -12,6 +13,7 @@ FRONT_WIDTH = 1.35 # Front wheel width in meters
 WHEEL_RADIUS = 0.330  # Wheel radius in meters
 LANE_WIDTH = 3.5  # Lane width in meters
 FUTURE_LOOK_AHEAD = 2 # Future look ahead in seconds
+
 
 class Car:
     def __init__(self, velocity, wheelbase, front_width, wheel_radius):
@@ -28,7 +30,8 @@ class Car:
         plt.ion() 
         _, self.ax = plt.subplots()
         self.last_update_time = time.time() 
-        self.warning_img = plt.imread('/home/rods/Desktop/IST-ROBO/Lab2/warning.png') 
+        
+        self.warning_img = plt.imread('warning.png') 
     
     def start_simulator(self, stdscr):
         curses.cbreak()
@@ -63,7 +66,7 @@ class Car:
     
     def write_angles_screen(self, stdscr):
         stdscr.clear()
-        stdscr.addstr(0, 0, f"The steering angle is {np.degrees(self.phi):=}")
+        stdscr.addstr(0, 0, f"The steering angle is {round(np.degrees(self.phi),0):=}")
         stdscr.refresh()    
     
     def change_angle(self, angle):
@@ -103,10 +106,25 @@ class Car:
         
         return False
     
+    def display_corners_car(self):
+        corners = []
+        for theta in [self.theta + np.pi/2, self.theta - np.pi/2]:
+            x = self.car_position[0] + FRONT_WIDTH/2 * np.cos(theta)
+            y = self.car_position[1] + WHEELBASE/2 * np.sin(theta)
+            corners.append(np.array([x, y]))
+            x = self.car_position[0] - FRONT_WIDTH/2 * np.cos(theta)
+            y = self.car_position[1] - WHEELBASE/2 * np.sin(theta)
+            corners.append(np.array([x, y]))
+        print(corners, theta)
+        return np.array(corners)
+        
+
     def display_simulation(self):
         self.ax.clear()
         x,y = self.car_position
         self.ax.scatter(x,y, label='Car Position', s= 30)
+        corners = self.display_corners_car()
+        self.ax.scatter(corners[:,0],corners[:,1], s= 30)
         dx, dy = self.get_direction()
         plt.arrow(x, y, dx*0.1, dy*0.1, head_width=0.2, head_length=0.1, fc='k', ec='k')
         self.ax.plot([0, 0], [-20, 20], 'k--', label='Lane Limit')
@@ -124,6 +142,11 @@ class Car:
         plt.draw()
         plt.pause(0.001)
 
+
+
+        
+    
+    
 if __name__ == "__main__":
     car = Car(4,WHEELBASE, FRONT_WIDTH, WHEEL_RADIUS)        
     curses.wrapper(car.start_simulator)
