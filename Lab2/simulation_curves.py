@@ -14,7 +14,8 @@ WHEEL_RADIUS = 0.330  # Wheel radius in meters
 LANE_WIDTH = 3.5  # Lane width in meters
 FUTURE_LOOK_AHEAD = 2 # Future look ahead in seconds
 MIN_VEL = 1
-MAX_VEL = 10
+MAX_VEL = 40
+LENGTH_CURVE = 62.8
 
 class Car:
     def __init__(self, velocity, wheelbase, front_width, wheel_radius):
@@ -29,6 +30,8 @@ class Car:
         self.velocity = velocity
         self.wheelbase = wheelbase
         self.look_ahead_iterations = int(FUTURE_LOOK_AHEAD/DELTA_T)
+        self.y_curve = np.linspace(0,LENGTH_CURVE, 100) 
+        self.x_curve = 1 * np.sin(self.y_curve/10)
         self.controller = controller()
         
         plt.ion() 
@@ -98,13 +101,24 @@ class Car:
         delta_y = dy * DELTA_T
         self.theta += self.velocity * np.sin(self.phi)/self.wheelbase * DELTA_T  
         x = self.car_position[0] + delta_x
-        y = self.limit_inside_display(self.car_position[1] + delta_y, -10, 10)
+        y = self.limit_inside_display(self.car_position[1] + delta_y, -30, LENGTH_CURVE+30)
         return (x,y)
     
     def get_direction(self):
         dx = self.velocity * np.cos(self.theta) * np.cos(self.phi)
         dy = self.velocity * np.sin(self.theta) * np.cos(self.phi)
         return dx, dy
+    
+    def danger_zone(self):
+        theta = self.theta 
+        x_position = self.car_position[0]
+        for _ in range(self.look_ahead_iterations):
+            x_position += self.velocity * np.cos(theta) * np.cos(self.phi)* DELTA_T
+            theta += self.velocity * np.sin(self.phi)/self.wheelbase * DELTA_T
+            if (x_position < 0 or x_position > LANE_WIDTH):
+                return True
+        
+        return False
     
     def limit_inside_display(self,value, min_value, max_value):
         if value > max_value:
@@ -113,17 +127,6 @@ class Car:
             value = max_value - (min_value - value)
         
         return value
-    
-    def danger_zone(self, lane_width):
-        theta = self.theta 
-        x_position = self.car_position[0]
-        for _ in range(self.look_ahead_iterations):
-            x_position += self.velocity * np.cos(theta) * np.cos(self.phi)* DELTA_T
-            theta += self.velocity * np.sin(self.phi)/self.wheelbase * DELTA_T
-            if (x_position < 0 or x_position > lane_width):
-                return True
-        
-        return False
     
     def display_corners_car(self):
         self.corners = []
@@ -143,6 +146,7 @@ class Car:
             Front_right, Front_left = Front_left, Front_right
         self.distance_left.append(Front_left[0])
         self.distance_right.append(LANE_WIDTH - Front_right[0])
+        #TODO: ADD THE CORNERS
 
     def display_simulation(self):
         self.ax1.clear()
@@ -154,9 +158,13 @@ class Car:
         self.ax1.plot(chassis_car[:,0],chassis_car[:,1])
         dx, dy = self.get_direction()
         self.ax1.arrow(x, y, dx*0.1, dy*0.1, head_width=0.2, head_length=0.1, fc='k', ec='k')
-        self.ax1.plot([0, 0], [-20, 20], 'k--', label='Lane Limit')
-        self.ax1.plot([LANE_WIDTH, LANE_WIDTH], [-20, 20], 'k--')
-        if(self.danger_zone(LANE_WIDTH)):
+        self.ax1.plot([0, 0], [-40, 0], 'k--', label='Lane Limit')
+        self.ax1.plot([LANE_WIDTH, LANE_WIDTH], [-40, 0], 'k--')
+        self.ax1.plot(self.x_curve, self.y_curve, 'r--')
+        self.ax1.plot(self.x_curve + LANE_WIDTH, self.y_curve, 'r--')
+        self.ax1.plot([0, 0], [LENGTH_CURVE, LENGTH_CURVE+40], 'k--')
+        self.ax1.plot([LANE_WIDTH, LANE_WIDTH], [LENGTH_CURVE, LENGTH_CURVE+40], 'k--')
+        if(self.danger_zone()):
             #Display the warning image
             self.ax1.imshow(self.warning_img, extent=[x + 3.5, x + 4.5, y + 3.5 , y + 4.5]) 
             
@@ -171,7 +179,6 @@ class Car:
 
         plt.draw()
         plt.pause(0.001)
-
 
 class controller:
     def __init__(self):
