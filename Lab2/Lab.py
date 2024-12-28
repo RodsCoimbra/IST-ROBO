@@ -6,15 +6,20 @@ from collections import deque
 
 # Constants
 DELTA_T = 0.01  # Time interval in seconds
-ANGLE_INCREMENT = np.radians(30)  # Angle increment in radians
+ANGLE_INCREMENT = np.radians(0.5)  # Angle increment in radians
 MAX_ANGLE = np.radians(30)  # Maximum steering angle in radians
 WHEELBASE = 2.36  # Wheelbase in meters
 FRONT_WIDTH = 1.35 # Front wheel width in meters
 WHEEL_RADIUS = 0.330  # Wheel radius in meters
 LANE_WIDTH = 3.5  # Lane width in meters
-FUTURE_LOOK_AHEAD = 1.25 # Future look ahead in seconds
 MIN_VEL = 10
 MAX_VEL = 30
+FUTURE_LOOK_AHEAD = 1 # Future look ahead in seconds
+NUM_STEPS_LOOK_AHEAD = 4
+DISTANCE_THRESHOLD_LTA = 0.6
+THRESHOLD_LTA = 5
+USE_ALWAYS_LTA = 0
+WINDOW_SIZE = 10
 
 class Car:
     def __init__(self, velocity, wheelbase, front_width, wheel_radius):
@@ -24,15 +29,23 @@ class Car:
         #self.time = deque([0],maxlen=100)
         self.distance_left = deque([self.car_position[0] - FRONT_WIDTH/2],maxlen=100)
         self.distance_right = deque([LANE_WIDTH - (self.car_position[0] + FRONT_WIDTH/2)],maxlen=100)
-        self.theta = np.radians(100)
         self.phi = 0
+        self.theta = np.radians(90)
+        # self.plot_phi = deque([self.phi],maxlen=20)
+        # self.plot_theta = deque([self.get_theta()],maxlen=20)
         self.velocity = velocity
         self.wheelbase = wheelbase
-        self.look_ahead_iterations = int(FUTURE_LOOK_AHEAD/DELTA_T)
+        self.step_size_look_ahead = int(FUTURE_LOOK_AHEAD/(DELTA_T*NUM_STEPS_LOOK_AHEAD)) 
         self.controller = controller()
+        self.use_lta = 0
+        self.last_measurments = deque([0] * WINDOW_SIZE,maxlen=WINDOW_SIZE)
+        self.error_lta = deque([],maxlen=100)
+        self.num_seconds_sim = 0
         
         plt.ion() 
         _, (self.ax1, self.ax2) = plt.subplots(1, 2, figsize=(15, 8))
+        # _, (self.ax3, self.ax4) = plt.subplots(1, 2)
+        
         self.last_update_time = 0
         self.last_update_time_sim = 0
         
@@ -42,7 +55,7 @@ class Car:
         self.stdscr = stdscr
         curses.cbreak()
         self.stdscr.nodelay(True)  # Make getch non-blocking
-        self.write_angles_screen()
+        self.write_screen()
         while True:
             if(self.joystick()):
                 break
@@ -50,27 +63,39 @@ class Car:
             # Periodic update every Delta_T seconds
             current_time = time.time()
             if current_time - self.last_update_time >= DELTA_T:
+                self.num_seconds_sim += DELTA_T
                 self.car_position = self.next_car_position()
                 self.last_update_time = current_time
+                self.corners = self.corners_car(self.car_position)
+                
+                #Simulation update every 20*Delta_T seconds
                 if current_time - self.last_update_time_sim >= 20* DELTA_T:
                     self.last_update_time_sim = current_time
-                    #self.time.append(self.time[-1] + DELTA_T)
                     self.display_simulation()
+                    self.write_screen()
                 
                 self.distance_to_lane()
                 #Uses the LTA controller
-                predicted_error = LANE_WIDTH/2 - self.car_position[0]
-                self.phi = self.controller.pid(predicted_error)
-                self.write_angles_screen()
+                if self.use_lta or USE_ALWAYS_LTA:
+                    predicted_error = self.distance_right[-1] - self.distance_left[-1] 
+                    self.last_measurments.append(predicted_error)
+                    predicted_error = np.mean(self.last_measurments)
+                    desired_phi = self.controller.pid(predicted_error)
+                    self.phi = desired_phi if abs(desired_phi - self.phi) <= ANGLE_INCREMENT else self.phi + np.sign(desired_phi - self.phi) * ANGLE_INCREMENT
+                    self.error_lta.append(predicted_error)
+                    if sum(abs(x) for x in self.error_lta) < THRESHOLD_LTA and len(self.error_lta) == self.error_lta.maxlen and self.phi < 0.001 and self.phi > -0.001:
+                        self.use_lta = 0
+                        self.error_lta.clear()
+                # self.plot_phi.append(self.phi)
         
     def joystick(self):
         key = self.stdscr.getch()  
         if key == curses.KEY_LEFT:
             self.change_angle(ANGLE_INCREMENT)
-            self.write_angles_screen()
+            self.write_screen()
         elif key == curses.KEY_RIGHT:
             self.change_angle(-ANGLE_INCREMENT)
-            self.write_angles_screen()
+            self.write_screen()
         elif key == curses.KEY_UP:
             self.change_velocity(3)
         elif key == curses.KEY_DOWN:
@@ -83,10 +108,11 @@ class Car:
         
         return 0
     
-    def write_angles_screen(self):
+    def write_screen(self):
         self.stdscr.clear()
         self.stdscr.addstr(0, 0, f"The steering angle is {round(-np.degrees(self.phi),3):=}")
         self.stdscr.addstr(1, 0, f"The velocity is {round(self.velocity,0):=}")
+        self.stdscr.addstr(2, 0, f"The simulation time is {self.num_seconds_sim:=}")
         self.stdscr.refresh()    
     
     def change_velocity(self, increment):
@@ -101,10 +127,15 @@ class Car:
         dx, dy = self.get_direction()
         delta_x = dx * DELTA_T
         delta_y = dy * DELTA_T
-        self.theta += self.velocity * np.sin(self.phi)/self.wheelbase * DELTA_T  
+        self.theta += self.velocity * np.sin(self.phi)/self.wheelbase * DELTA_T 
+        # self.plot_theta.append(self.get_theta()) 
         x = self.car_position[0] + delta_x
         y = self.limit_inside_display(self.car_position[1] + delta_y, -10, 10)
         return (x,y)
+    
+    def get_theta(self):
+        theta = np.rad2deg(self.theta)
+        return theta % 360
     
     def get_direction(self):
         dx = self.velocity * np.cos(self.theta) * np.cos(self.phi)
@@ -115,56 +146,65 @@ class Car:
         if value > max_value:
             value = min_value + (value - max_value)
         elif value < min_value:
-            value = max_value - (min_value - value)
-        
+            value = max_value - (min_value - value)  
         return value
     
     def danger_zone(self, lane_width):
         theta = self.theta 
-        x_position = self.car_position[0]
-        step = 20
-        for i in range(0, self.look_ahead_iterations, step):
-            if i == 2*step:
-                self.future_position = x_position
-            x_position += self.velocity * np.cos(theta) * np.cos(self.phi)* DELTA_T * step
-            theta += self.velocity * np.sin(self.phi)/self.wheelbase * DELTA_T * step
+        car_position = [*self.car_position]
+        corners = self.corners_car(car_position, just_front = True)
         
-        if (x_position < 0 or x_position > lane_width):
+        if (corners[0][0] > lane_width - DISTANCE_THRESHOLD_LTA or corners[1][0] < DISTANCE_THRESHOLD_LTA):
+            self.use_lta = 1
             return True
+        
+        for _ in range(0, NUM_STEPS_LOOK_AHEAD):
+            car_position[0] += self.velocity * np.cos(theta) * np.cos(self.phi) * DELTA_T * self.step_size_look_ahead
+            car_position[1] += self.velocity * np.sin(theta) * np.cos(self.phi) * DELTA_T * self.step_size_look_ahead
+            theta += self.velocity * np.sin(self.phi)/self.wheelbase * DELTA_T * self.step_size_look_ahead       
+            corners = self.corners_car(car_position, just_front = True)
+            
+            if (corners[0][0] > lane_width or corners[1][0] < 0):
+                self.use_lta = 1
+                return True
+        
         return False
+     
     
-    def display_corners_car(self):
-        self.corners = []
+    def corners_car(self, center_position, just_front = False):
+        corners = []
         # Order - Front Right, Front Left, Back Left, Back Right
-        for theta in [self.theta, self.theta + np.pi]:
-            x = self.car_position[0] +FRONT_WIDTH/2 * np.sin(theta) + WHEELBASE/2 * np.cos(theta)
-            y = self.car_position[1] +WHEELBASE/2 * np.sin(theta) - FRONT_WIDTH/2 * np.cos(theta)
-            self.corners.append(np.array([x, y]))
-            x = self.car_position[0] -FRONT_WIDTH/2 * np.sin(theta) + WHEELBASE/2 * np.cos(theta)
-            y = self.car_position[1] +WHEELBASE/2 * np.sin(theta) + FRONT_WIDTH/2 * np.cos(theta)
-            self.corners.append(np.array([x, y]))
+        angles = [self.theta] if just_front else [self.theta, self.theta + np.pi]
+        for theta in angles:
+            x = center_position[0] +FRONT_WIDTH/2 * np.sin(theta) + WHEELBASE/2 * np.cos(theta)
+            y = center_position[1] +WHEELBASE/2 * np.sin(theta) - FRONT_WIDTH/2 * np.cos(theta)
+            corners.append(np.array([x, y]))
+            x = center_position[0] -FRONT_WIDTH/2 * np.sin(theta) + WHEELBASE/2 * np.cos(theta)
+            y = center_position[1] +WHEELBASE/2 * np.sin(theta) + FRONT_WIDTH/2 * np.cos(theta)
+            corners.append(np.array([x, y]))
+        
+        return corners
     
     def distance_to_lane(self):
         """"Only the front corners are considered"""
         Front_right, Front_left = self.corners[0], self.corners[1]
-        if (Front_right - Front_left)[0] < 0:
-            Front_right, Front_left = Front_left, Front_right
-        self.distance_left.append(Front_left[0])
-        self.distance_right.append(LANE_WIDTH - Front_right[0])
+        self.distance_left.append(Front_left[0] + np.random.normal(0, 0.03))
+        self.distance_right.append(LANE_WIDTH - Front_right[0] + np.random.normal(0, 0.03))
 
     def display_simulation(self):
         self.ax1.clear()
         self.ax2.clear()
+        # self.ax3.clear()
+        # self.ax4.clear()
         x,y = self.car_position
         self.ax1.scatter(x,y, label='Car Position', s= 30)
-        self.display_corners_car()
         chassis_car = np.append(self.corners, [self.corners[0]], axis=0)
         self.ax1.plot(chassis_car[:,0],chassis_car[:,1])
         dx, dy = self.get_direction()
         self.ax1.arrow(x, y, dx*0.1, dy*0.1, head_width=0.2, head_length=0.1, fc='k', ec='k')
         self.ax1.plot([0, 0], [-20, 20], 'k--', label='Lane Limit')
         self.ax1.plot([LANE_WIDTH, LANE_WIDTH], [-20, 20], 'k--')
-        if(self.danger_zone(LANE_WIDTH)):
+        if(self.danger_zone(LANE_WIDTH) or self.use_lta):
             #Display the warning image
             self.ax1.imshow(self.warning_img, extent=[x + 3.5, x + 4.5, y + 3.5 , y + 4.5]) 
             
@@ -173,11 +213,18 @@ class Car:
         self.ax1.set_xlim(x - 5, x + 5)
         self.ax1.set_ylim(y - 5, y + 5)
         self.ax1.legend(loc='upper left') 
-        # self.ax2.plot(self.time, self.distance_left, label='Distance to left lane')
-        # self.ax2.plot(self.time, self.distance_right, label='Distance to right lane')
+        self.ax2.plot(np.arange(len(self.distance_left)), self.distance_left, label='Distance to left lane')
+        self.ax2.plot(np.arange(len(self.distance_right)), self.distance_right, label='Distance to right lane')
         y = [i - j for i,j in zip(self.distance_right, self.distance_left)]
-        self.ax2.plot(np.arange(len(y)), y, label='Distance to middle')
-        self.ax2.set_ylim(-LANE_WIDTH/2, LANE_WIDTH/2)
+        self.ax2.plot(np.arange(len(y)), y, color= 'r', label='Distance to middle')
+        # self.ax3.plot(np.arange(len(self.plot_phi)), self.plot_phi)
+        # self.ax3.plot([0,len(self.plot_phi)], [MAX_ANGLE, MAX_ANGLE], 'r--', label='Max Angle')
+        # self.ax3.plot([0,len(self.plot_phi)], [-MAX_ANGLE, -MAX_ANGLE], 'k--', label='Min Angle')
+        # self.ax3.plot([0,len(self.plot_phi)], [0, 0], 'b--', label='Zero Angle')
+        # self.ax3.legend(loc='upper left')
+        # self.ax4.plot(np.arange(len(self.plot_theta)), self.plot_theta)
+        # self.ax4.legend(loc='upper left')
+        # self.ax4.set_ylim(150, 30)
  
         plt.draw()
         plt.pause(0.001)
@@ -185,10 +232,9 @@ class Car:
 
 class controller:
     def __init__(self):
-        self.kp = 0.06 #0.5
-        self.ki = 0.0 #0.1
-        self.kd = 0.05 #0.05
-        self.ka = 0
+        self.kp = 0.08 #0.5
+        self.ki = 0.05 #0.1
+        self.kd = 0.02 #0.05
         self.I = 0
         self.error = 0
         self.reference = 0
@@ -199,19 +245,16 @@ class controller:
     def pid(self, current):
         error = self.reference - current
         # If the error is too small, consider it as zero
-        if error < 0.01 and error > -0.01:
-            error = 0
+        # if error < 0.001 and error > -0.001:
+        #     error = 0
             
         P = self.kp * error
         D = self.kd * (error - self.previous_error) / DELTA_T
         angle = P + self.I + D
         clip_angle = np.clip(angle, -MAX_ANGLE, MAX_ANGLE)
-        
-        #Anti wind-up
-        self.I += (self.ki * error - self.ka * (clip_angle-angle)) * DELTA_T
+        self.I += self.ki * error * DELTA_T
         self.previous_error = error        
         return clip_angle
-        
         
     
 if __name__ == "__main__":

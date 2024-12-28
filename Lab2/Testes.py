@@ -12,26 +12,43 @@ WHEELBASE = 2.36  # Wheelbase in meters
 FRONT_WIDTH = 1.35 # Front wheel width in meters
 WHEEL_RADIUS = 0.330  # Wheel radius in meters
 LANE_WIDTH = 3.5  # Lane width in meters
-FUTURE_LOOK_AHEAD = 1.25 # Future look ahead in seconds
 MIN_VEL = 10
 MAX_VEL = 30
-TIME_SIM = 20
+TIME_SIM = 30
+
+INITIAL_POSITION = 0
+INITIAL_THETA = 90
+INITIAL_PHI = 0
+VELOCITY = 30
+FUTURE_LOOK_AHEAD = 1 # Future look ahead in seconds
+NUM_STEPS_LOOK_AHEAD = 4
+THRESHOLD_LTA = 0.01
+DISTANCE_THRESHOLD_LTA = 0.2
+USE_ALWAYS_LTA = 1
+WINDOW_SIZE = 10
+np.random.seed(42)
 
 class Car:
-    def __init__(self, velocity, wheelbase, front_width, wheel_radius):
-        self.car_position = (LANE_WIDTH/2, 0)  
+    def __init__(self, wheelbase, front_width, wheel_radius):
+        self.car_position = (LANE_WIDTH/2 + INITIAL_POSITION, 0)  
         self.plot_car = []
         self.plot_error = []
+        self.distance_left = [self.car_position[0] - FRONT_WIDTH/2]
+        self.distance_right = [LANE_WIDTH - (self.car_position[0] + FRONT_WIDTH/2)]
         self.wheel_radius = wheel_radius
         self.front_width = front_width
-        self.theta = np.radians(120)
-        self.phi = 0
+        self.theta = np.radians(INITIAL_THETA)
+        self.phi = np.radians(INITIAL_PHI)
         self.plot_phi = []
         self.plot_theta = []
-        self.velocity = velocity
+        self.plot_activation_lta = []
+        self.velocity = VELOCITY
         self.wheelbase = wheelbase
-        self.look_ahead_iterations = int(FUTURE_LOOK_AHEAD/DELTA_T)
+        self.step_size_look_ahead = int(FUTURE_LOOK_AHEAD/(DELTA_T*NUM_STEPS_LOOK_AHEAD)) 
         self.controller = controller()
+        self.use_lta = 0
+        self.last_measurments = deque([0] * WINDOW_SIZE,maxlen=WINDOW_SIZE)
+        self.error_lta = deque([],maxlen=100)
         _,(self.ax1, self.ax2) = plt.subplots(1,2)
         _, (self.ax3, self.ax4) = plt.subplots(1, 2)
     
@@ -41,12 +58,44 @@ class Car:
             i += 1
             self.car_position = self.next_car_position()
             self.plot_car.append(self.car_position)
-            predicted_error = LANE_WIDTH/2 - self.car_position[0]
-            self.phi = self.controller.pid(predicted_error)
+            self.corners = self.corners_car(self.car_position)
+            self.distance_to_lane()
+            self.plot_activation_lta.append(self.use_lta)
+            if  i % 20 and not USE_ALWAYS_LTA:
+                self.danger_zone(LANE_WIDTH)
+            if self.use_lta or USE_ALWAYS_LTA:
+                predicted_error = self.distance_right[-1] - self.distance_left[-1] 
+                self.last_measurments.append(predicted_error)
+                desired_phi = self.controller.pid(np.mean(self.last_measurments))
+                self.phi = desired_phi if abs(desired_phi - self.phi) <= ANGLE_INCREMENT else self.phi + np.sign(desired_phi - self.phi) * ANGLE_INCREMENT
+                self.error_lta.append(predicted_error)
+                if sum(abs(x) for x in self.error_lta) < THRESHOLD_LTA and len(self.error_lta) == self.error_lta.maxlen:
+                    self.use_lta = 0
+                    self.error_lta.clear()
+                        
             self.plot_phi.append(self.phi)
-            self.plot_error.append(predicted_error)
-        
+            self.plot_error.append(np.median(self.last_measurments))
         self.display_simulation()
+    
+    def corners_car(self, center_position, just_front = False):
+        corners = []
+        # Order - Front Right, Front Left, Back Left, Back Right
+        angles = [self.theta] if just_front else [self.theta, self.theta + np.pi]
+        for theta in angles:
+            x = center_position[0] +FRONT_WIDTH/2 * np.sin(theta) + WHEELBASE/2 * np.cos(theta)
+            y = center_position[1] +WHEELBASE/2 * np.sin(theta) - FRONT_WIDTH/2 * np.cos(theta)
+            corners.append(np.array([x, y]))
+            x = center_position[0] -FRONT_WIDTH/2 * np.sin(theta) + WHEELBASE/2 * np.cos(theta)
+            y = center_position[1] +WHEELBASE/2 * np.sin(theta) + FRONT_WIDTH/2 * np.cos(theta)
+            corners.append(np.array([x, y]))
+        
+        return corners
+    
+    def distance_to_lane(self):
+        """"Only the front corners are considered"""
+        Front_right, Front_left = self.corners[0], self.corners[1]
+        self.distance_left.append(Front_left[0] + np.random.normal(0, 0.03))
+        self.distance_right.append(LANE_WIDTH - Front_right[0] + np.random.normal(0, 0.03))
         
     def next_car_position(self):
         dx, dy = self.get_direction()
@@ -70,26 +119,52 @@ class Car:
     def display_simulation(self):
         x,y = zip(*self.plot_car)
         self.ax1.scatter(x,y, label='Car Position', s= 10)
-        self.ax1.plot([0, 0], [0, 250], 'k--', label='Lane Limit')
-        self.ax1.plot([LANE_WIDTH, LANE_WIDTH], [0, 250], 'k--')
-        self.ax1.plot([LANE_WIDTH/2, LANE_WIDTH/2], [0, 250], 'b--', label='Path')
+        self.ax1.plot([0, 0], [0, self.car_position[1] + 10], 'k--', label='Lane Limit')
+        self.ax1.plot([LANE_WIDTH, LANE_WIDTH], [0, self.car_position[1] + 10], 'k--')
+        self.ax1.plot([LANE_WIDTH/2, LANE_WIDTH/2], [0, self.car_position[1] + 10], 'b--', label='Path')
         self.ax1.legend(loc='upper left') 
-        self.ax2.plot(np.linspace(0,20,len(self.plot_error)), self.plot_error, label='Error')
-        self.ax3.scatter(np.linspace(0,20,len(self.plot_phi)), self.plot_phi, label='Phi Value', s= 10)
-        self.ax3.plot([0,20], [MAX_ANGLE, MAX_ANGLE], 'r--', label='Max Angle')
-        self.ax3.plot([0,20], [-MAX_ANGLE, -MAX_ANGLE], 'k--', label='Min Angle')
-        self.ax3.plot([0,20], [0, 0], 'b--', label='Zero Angle')
+        self.ax2.plot(np.linspace(0,TIME_SIM,len(self.plot_error)), self.plot_error, label='Error')
+        self.ax2.plot(np.linspace(0,TIME_SIM,len(self.distance_left)), self.distance_left, label='Distance Left')
+        self.ax2.plot(np.linspace(0,TIME_SIM,len(self.distance_right)), self.distance_right, label='Distance Right')
+        self.ax2.legend(loc='upper left')
+        self.ax3.scatter(np.linspace(0,TIME_SIM,len(self.plot_phi)), self.plot_phi, label='Phi Value', s= 10)
+        self.ax3.plot([0,TIME_SIM], [MAX_ANGLE, MAX_ANGLE], 'r--', label='Max Angle')
+        self.ax3.plot([0,TIME_SIM], [-MAX_ANGLE, -MAX_ANGLE], 'k--', label='Min Angle')
+        self.ax3.plot([0,TIME_SIM], [0, 0], 'b--', label='Zero Angle')
+        self.ax3.plot(np.linspace(0,TIME_SIM,len(self.plot_activation_lta)), [MAX_ANGLE*1.1 if i else -MAX_ANGLE*1.1 for i in self.plot_activation_lta], label='LTA Activation', color = 'g')
         self.ax3.legend(loc='upper left')
-        self.ax4.plot(np.linspace(0,20,len(self.plot_theta)), self.plot_theta, label='Theta')
+        self.ax4.plot(np.linspace(0,TIME_SIM,len(self.plot_theta)), self.plot_theta, label='Theta')
+        self.ax4.plot(np.linspace(0,TIME_SIM,len(self.plot_activation_lta)), [np.rad2deg(np.pi/2 - MAX_ANGLE)*1.1 if i else np.rad2deg(np.pi/2 + MAX_ANGLE)*0.9 for i in self.plot_activation_lta], label='LTA Activation', color = 'g')
+        self.ax4.set_ylim(np.rad2deg(np.pi/2 + MAX_ANGLE),np.rad2deg(np.pi/2 - MAX_ANGLE))
         self.ax4.legend(loc='upper left')
         plt.show()
+        
+    def danger_zone(self, lane_width):
+        theta = self.theta 
+        car_position = [*self.car_position]
+        corners = self.corners_car(car_position, just_front = True)
+        
+        if (corners[0][0] > lane_width - DISTANCE_THRESHOLD_LTA or corners[1][0] < DISTANCE_THRESHOLD_LTA):
+            self.use_lta = 1
+            return True
+        
+        for _ in range(0, NUM_STEPS_LOOK_AHEAD):
+            car_position[0] += self.velocity * np.cos(theta) * np.cos(self.phi) * DELTA_T * self.step_size_look_ahead
+            car_position[1] += self.velocity * np.sin(theta) * np.cos(self.phi) * DELTA_T * self.step_size_look_ahead
+            theta += self.velocity * np.sin(self.phi)/self.wheelbase * DELTA_T * self.step_size_look_ahead       
+            corners = self.corners_car(car_position, just_front = True)
+            
+            if (corners[0][0] > lane_width or corners[1][0] < 0):
+                self.use_lta = 1
+                return True
+        
+        return False
 
 class controller:
     def __init__(self):
-        self.kp = 0.06 #0.5
-        self.ki = 0.0 #0.1
-        self.kd = 0.05 #0.05
-        self.ka = 0
+        self.kp = 0.08 #0.5
+        self.ki = 0.03 #0.1
+        self.kd = 0.035 #0.05
         self.I = 0
         self.error = 0
         self.reference = 0
@@ -98,23 +173,18 @@ class controller:
         
 
     def pid(self, current):
-        error = self.reference - current
-        # If the error is too small, consider it as zero
-        if error < 0.01 and error > -0.01:
-            error = 0
-            
+        error = self.reference - current        
         P = self.kp * error
         D = self.kd * (error - self.previous_error) / DELTA_T
         angle = P + self.I + D
         clip_angle = np.clip(angle, -MAX_ANGLE, MAX_ANGLE)
-        
-        #Anti wind-up
-        self.I += (self.ki * error - self.ka * (clip_angle-angle)) * DELTA_T
+        self.I += self.ki * error * DELTA_T
         self.previous_error = error        
         return clip_angle
         
         
+        
     
 if __name__ == "__main__":
-    car = Car(50,WHEELBASE, FRONT_WIDTH, WHEEL_RADIUS)        
+    car = Car(WHEELBASE, FRONT_WIDTH, WHEEL_RADIUS)        
     car.start_simulator()
