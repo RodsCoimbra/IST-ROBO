@@ -6,7 +6,7 @@ from collections import deque
 
 # Constants
 DELTA_T = 0.01  # Time interval in seconds
-ANGLE_INCREMENT = np.radians(0.5)  # Angle increment in radians
+ANGLE_INCREMENT = np.radians(10)  # Angle increment in radians
 MAX_ANGLE = np.radians(30)  # Maximum steering angle in radians
 WHEELBASE = 2.36  # Wheelbase in meters
 FRONT_WIDTH = 1.35 # Front wheel width in meters
@@ -17,9 +17,10 @@ MAX_VEL = 30
 FUTURE_LOOK_AHEAD = 1 # Future look ahead in seconds
 NUM_STEPS_LOOK_AHEAD = 4
 DISTANCE_THRESHOLD_LTA = 0.6
-THRESHOLD_LTA = 5
-USE_ALWAYS_LTA = 0
-WINDOW_SIZE = 10
+THRESHOLD_STOP_LTA = 2.5
+USE_ALWAYS_LTA = 1
+WINDOW_SIZE_MEAN = 10
+NOISE_STD = 0.0
 
 class Car:
     def __init__(self, velocity, wheelbase, front_width, wheel_radius):
@@ -29,8 +30,8 @@ class Car:
         #self.time = deque([0],maxlen=100)
         self.distance_left = deque([self.car_position[0] - FRONT_WIDTH/2],maxlen=100)
         self.distance_right = deque([LANE_WIDTH - (self.car_position[0] + FRONT_WIDTH/2)],maxlen=100)
-        self.phi = 0
         self.theta = np.radians(90)
+        self.phi = np.radians(0)
         # self.plot_phi = deque([self.phi],maxlen=20)
         # self.plot_theta = deque([self.get_theta()],maxlen=20)
         self.velocity = velocity
@@ -38,7 +39,7 @@ class Car:
         self.step_size_look_ahead = int(FUTURE_LOOK_AHEAD/(DELTA_T*NUM_STEPS_LOOK_AHEAD)) 
         self.controller = controller()
         self.use_lta = 0
-        self.last_measurments = deque([0] * WINDOW_SIZE,maxlen=WINDOW_SIZE)
+        self.last_measurments = deque([0] * WINDOW_SIZE_MEAN,maxlen=WINDOW_SIZE_MEAN)
         self.error_lta = deque([],maxlen=100)
         self.num_seconds_sim = 0
         
@@ -83,7 +84,7 @@ class Car:
                     desired_phi = self.controller.pid(predicted_error)
                     self.phi = desired_phi if abs(desired_phi - self.phi) <= ANGLE_INCREMENT else self.phi + np.sign(desired_phi - self.phi) * ANGLE_INCREMENT
                     self.error_lta.append(predicted_error)
-                    if sum(abs(x) for x in self.error_lta) < THRESHOLD_LTA and len(self.error_lta) == self.error_lta.maxlen and self.phi < 0.001 and self.phi > -0.001:
+                    if sum(abs(x) for x in self.error_lta) < THRESHOLD_STOP_LTA and len(self.error_lta) == self.error_lta.maxlen and self.phi < 0.001 and self.phi > -0.001:
                         self.use_lta = 0
                         self.error_lta.clear()
                 # self.plot_phi.append(self.phi)
@@ -123,12 +124,16 @@ class Car:
         self.phi += angle
         self.phi = np.clip(self.phi, -MAX_ANGLE, MAX_ANGLE)
         
+    def get_direction(self):
+        dx = self.velocity * np.cos(self.theta) * np.cos(self.phi)
+        dy = self.velocity * np.sin(self.theta) * np.cos(self.phi)
+        return dx, dy
+    
     def next_car_position(self):
         dx, dy = self.get_direction()
         delta_x = dx * DELTA_T
         delta_y = dy * DELTA_T
-        self.theta += self.velocity * np.sin(self.phi)/self.wheelbase * DELTA_T 
-        # self.plot_theta.append(self.get_theta()) 
+        self.theta += self.velocity * np.sin(self.phi)/self.wheelbase * DELTA_T  
         x = self.car_position[0] + delta_x
         y = self.limit_inside_display(self.car_position[1] + delta_y, -10, 10)
         return (x,y)
@@ -137,10 +142,6 @@ class Car:
         theta = np.rad2deg(self.theta)
         return theta % 360
     
-    def get_direction(self):
-        dx = self.velocity * np.cos(self.theta) * np.cos(self.phi)
-        dy = self.velocity * np.sin(self.theta) * np.cos(self.phi)
-        return dx, dy
     
     def limit_inside_display(self,value, min_value, max_value):
         if value > max_value:
@@ -188,8 +189,8 @@ class Car:
     def distance_to_lane(self):
         """"Only the front corners are considered"""
         Front_right, Front_left = self.corners[0], self.corners[1]
-        self.distance_left.append(Front_left[0] + np.random.normal(0, 0.03))
-        self.distance_right.append(LANE_WIDTH - Front_right[0] + np.random.normal(0, 0.03))
+        self.distance_left.append(Front_left[0] + np.random.normal(0, NOISE_STD))
+        self.distance_right.append(LANE_WIDTH - Front_right[0] + np.random.normal(0, NOISE_STD))
 
     def display_simulation(self):
         self.ax1.clear()
