@@ -5,8 +5,8 @@ import time
 from collections import deque 
 
 # Constants
-DELTA_T = 0.01  # Time interval in seconds
-ANGLE_INCREMENT = np.radians(3)  # Angle increment in radians
+DELTA_T = 0.05  # Time interval in seconds
+ANGLE_INCREMENT = np.radians(9)  # Angle increment in radians
 MAX_ANGLE = np.radians(30)  # Maximum steering angle in radians
 WHEELBASE = 2.36  # Wheelbase in meters
 FRONT_WIDTH = 1.35 # Front wheel width in meters
@@ -15,6 +15,8 @@ LANE_WIDTH = 3.5  # Lane width in meters
 MIN_VEL = 10
 MAX_VEL = 30
 TIME_SIM = 30
+NOISE_STD = 0.03
+
 
 INITIAL_POSITION = 0
 INITIAL_THETA = 90
@@ -23,9 +25,9 @@ VELOCITY = 30
 FUTURE_LOOK_AHEAD = 1 # Future look ahead in seconds
 NUM_STEPS_LOOK_AHEAD = 4
 THRESHOLD_LTA = 0.01
-DISTANCE_THRESHOLD_LTA = 0.2
+DISTANCE_THRESHOLD_LTA = 0.5
 USE_ALWAYS_LTA = 1
-WINDOW_SIZE = 10
+WINDOW_SIZE_MEAN = 2
 np.random.seed(42)
 
 class Car:
@@ -47,7 +49,7 @@ class Car:
         self.step_size_look_ahead = int(FUTURE_LOOK_AHEAD/(DELTA_T*NUM_STEPS_LOOK_AHEAD)) 
         self.controller = controller()
         self.use_lta = 0
-        self.last_measurments = deque([0] * WINDOW_SIZE,maxlen=WINDOW_SIZE)
+        self.last_measurments = deque([0] * WINDOW_SIZE_MEAN,maxlen=WINDOW_SIZE_MEAN)
         self.error_lta = deque([],maxlen=100)
         _,(self.ax1, self.ax2) = plt.subplots(1,2)
         _, (self.ax3, self.ax4) = plt.subplots(1, 2)
@@ -94,8 +96,8 @@ class Car:
     def distance_to_lane(self):
         """"Only the front corners are considered"""
         Front_right, Front_left = self.corners[0], self.corners[1]
-        self.distance_left.append(Front_left[0] + np.random.normal(0, 0.03))
-        self.distance_right.append(LANE_WIDTH - Front_right[0] + np.random.normal(0, 0.03))
+        self.distance_left.append(Front_left[0] + np.random.normal(0, NOISE_STD))
+        self.distance_right.append(LANE_WIDTH - Front_right[0] + np.random.normal(0, NOISE_STD))
         
     def next_car_position(self):
         dx, dy = self.get_direction()
@@ -144,7 +146,7 @@ class Car:
         car_position = [*self.car_position]
         corners = self.corners_car(car_position, just_front = True)
         
-        if (corners[0][0] > lane_width - DISTANCE_THRESHOLD_LTA or corners[1][0] < DISTANCE_THRESHOLD_LTA):
+        if (self.distance_right[-1] < DISTANCE_THRESHOLD_LTA or self.distance_left[-1] < DISTANCE_THRESHOLD_LTA):
             self.use_lta = 1
             return True
         
@@ -157,14 +159,13 @@ class Car:
             if (corners[0][0] > lane_width or corners[1][0] < 0):
                 self.use_lta = 1
                 return True
-        
+            
         return False
-
 class controller:
     def __init__(self):
-        self.kp = 0.08 #0.5
-        self.ki = 0.03 #0.1
-        self.kd = 0.035 #0.05
+        self.kp = 0.08 #0.08 
+        self.ki = 0.01  #0.03 
+        self.kd = 0.02 #0.035 
         self.I = 0
         self.error = 0
         self.reference = 0

@@ -6,21 +6,21 @@ from collections import deque
 
 # Constants
 DELTA_T = 0.01  # Time interval in seconds
-ANGLE_INCREMENT = np.radians(10)  # Angle increment in radians
+ANGLE_INCREMENT = np.radians(1)  # Angle increment in radians
 MAX_ANGLE = np.radians(30)  # Maximum steering angle in radians
 WHEELBASE = 2.36  # Wheelbase in meters
 FRONT_WIDTH = 1.35 # Front wheel width in meters
 WHEEL_RADIUS = 0.330  # Wheel radius in meters
 LANE_WIDTH = 3.5  # Lane width in meters
 MIN_VEL = 10
-MAX_VEL = 30
-FUTURE_LOOK_AHEAD = 1 # Future look ahead in seconds
+MAX_VEL = 33
+FUTURE_LOOK_AHEAD = 0.5 # Future look ahead in seconds
 NUM_STEPS_LOOK_AHEAD = 4
-DISTANCE_THRESHOLD_LTA = 0.6
+DISTANCE_THRESHOLD_LTA = 0.4
 THRESHOLD_STOP_LTA = 2.5
-USE_ALWAYS_LTA = 1
-WINDOW_SIZE_MEAN = 10
-NOISE_STD = 0.0
+USE_ALWAYS_LTA = 0
+WINDOW_SIZE_MEAN = 20
+NOISE_STD = 0.03
 
 class Car:
     def __init__(self, velocity, wheelbase, front_width, wheel_radius):
@@ -68,14 +68,15 @@ class Car:
                 self.car_position = self.next_car_position()
                 self.last_update_time = current_time
                 self.corners = self.corners_car(self.car_position)
-                
                 #Simulation update every 20*Delta_T seconds
+                
+                self.distance_to_lane()
+                self.danger_zone(LANE_WIDTH)
+                
                 if current_time - self.last_update_time_sim >= 20* DELTA_T:
                     self.last_update_time_sim = current_time
                     self.display_simulation()
                     self.write_screen()
-                
-                self.distance_to_lane()
                 #Uses the LTA controller
                 if self.use_lta or USE_ALWAYS_LTA:
                     predicted_error = self.distance_right[-1] - self.distance_left[-1] 
@@ -155,7 +156,7 @@ class Car:
         car_position = [*self.car_position]
         corners = self.corners_car(car_position, just_front = True)
         
-        if (corners[0][0] > lane_width - DISTANCE_THRESHOLD_LTA or corners[1][0] < DISTANCE_THRESHOLD_LTA):
+        if (self.distance_right[-1] < DISTANCE_THRESHOLD_LTA or self.distance_left[-1] < DISTANCE_THRESHOLD_LTA):
             self.use_lta = 1
             return True
         
@@ -168,7 +169,7 @@ class Car:
             if (corners[0][0] > lane_width or corners[1][0] < 0):
                 self.use_lta = 1
                 return True
-        
+            
         return False
      
     
@@ -205,7 +206,7 @@ class Car:
         self.ax1.arrow(x, y, dx*0.1, dy*0.1, head_width=0.2, head_length=0.1, fc='k', ec='k')
         self.ax1.plot([0, 0], [-20, 20], 'k--', label='Lane Limit')
         self.ax1.plot([LANE_WIDTH, LANE_WIDTH], [-20, 20], 'k--')
-        if(self.danger_zone(LANE_WIDTH) or self.use_lta):
+        if(self.use_lta):
             #Display the warning image
             self.ax1.imshow(self.warning_img, extent=[x + 3.5, x + 4.5, y + 3.5 , y + 4.5]) 
             

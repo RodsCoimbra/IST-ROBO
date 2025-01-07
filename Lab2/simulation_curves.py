@@ -21,7 +21,7 @@ THRESHOLD_STOP_LTA = 5
 USE_ALWAYS_LTA = 1
 WINDOW_SIZE_MEAN = 10
 LENGTH_CURVE = 62.8
-NOISE_STD = 0.00
+NOISE_STD = 0.03
 class Car:
     def __init__(self, velocity, wheelbase, front_width, wheel_radius):
         self.car_position = (LANE_WIDTH/2, -10)  
@@ -63,14 +63,15 @@ class Car:
             
             # Periodic update every Delta_T seconds
             current_time = time.time()
+            
             if current_time - self.last_update_time >= DELTA_T:
-                self.num_seconds_sim += DELTA_T
                 self.car_position = self.next_car_position()
                 self.last_update_time = current_time
                 self.corners = self.corners_car(self.car_position)
                 
                 #Simulation update every 20*Delta_T seconds
                 if current_time - self.last_update_time_sim >= 20* DELTA_T:
+                    self.num_seconds_sim += 20*DELTA_T 
                     self.last_update_time_sim = current_time
                     self.display_simulation()
                     self.write_screen()
