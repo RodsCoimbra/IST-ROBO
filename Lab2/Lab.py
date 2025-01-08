@@ -260,5 +260,5 @@ class controller:
         
     
 if __name__ == "__main__":
-    car = Car(30,WHEELBASE, FRONT_WIDTH, WHEEL_RADIUS)        
+    car = Car(15,WHEELBASE, FRONT_WIDTH, WHEEL_RADIUS)        
     curses.wrapper(car.start_simulator)
