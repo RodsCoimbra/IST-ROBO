@@ -1,8 +1,6 @@
-from tqdm import tqdm
-import matplotlib.pyplot as plt
 import numpy as np
 import multiprocessing
-
+import pickle
 # Constants
 DELTA_T = 0.05                          # Time interval in seconds
 DISPLAY_DELTA = 2 * DELTA_T             # Display update interval in seconds
@@ -14,10 +12,11 @@ FRONT_WIDTH = 1.35                      # Front wheel width in meters
 LANE_WIDTH = 4                          # Lane width in meters
 MIN_VEL = 14
 MAX_VEL = 32
-FUTURE_LOOK_AHEAD = DISPLAY_DELTA       # Future look ahead in seconds
+FUTURE_LOOK_AHEAD =  3*DISPLAY_DELTA        # Future look ahead in seconds
 NUM_STEPS_LOOK_AHEAD = 4
-DISTANCE_THRESHOLD_LTA = 1.5
+DISTANCE_THRESHOLD_LTA = 2
 WINDOW_SIZE_MEAN = 1
+LENGTH_STRAIGHT = 50
 NOISE_STD = 0.00
 SIM_TIME = 10
 
@@ -28,6 +27,10 @@ CAR_CORNERS = np.array([(WHEELBASE, -FRONT_WIDTH/2),
                         (0, -FRONT_WIDTH/2)]) 
 
 SENSOR_POSITIONS = np.array([WHEELBASE, 0])
+
+MAX_CHANGE_PHI = 2
+
+PROBABILITY_TAKING_ACTION = 0.75
 
 np.random.seed(42)
 
@@ -71,15 +74,15 @@ class Car:
         self.position_plot = [self.car_position]
         self.plot_lta = [self.use_lta]
         self.keep_on = False
-        self.left_the_road =[]
+        self.left_the_road = []
         self.given_up = False
         
     def start_simulator(self):
         self.sensor_position = rotation(SENSOR_POSITIONS, self.theta) + self.car_position
         self.distance_to_lane()
         while SIM_TIME > self.num_seconds_sim:
-            if(np.random.random() < 0.5):
-                self.phi += np.radians(np.random.uniform(-10, 10))
+            if(np.random.random() < PROBABILITY_TAKING_ACTION):
+                self.change_angle(np.radians(np.random.uniform(-MAX_CHANGE_PHI, MAX_CHANGE_PHI)))
             self.num_seconds_sim += DELTA_T 
             self.time.append(self.num_seconds_sim)
             self.car_position = self.next_car_position()
@@ -98,14 +101,13 @@ class Car:
                 self.given_up = True
                 break
             
-            start_idx_right = np.searchsorted(self.y_trajectory, self.corners[0][1], side="left")
-            start_idx_right = np.argmin(np.abs(self.y_trajectory[max(0,start_idx_right-1):min(len(self.y_trajectory),start_idx_right+1)] - self.corners[0][1]))
-            start_idx_left = np.argmin(np.abs(self.y_trajectory[max(0,start_idx_right-10):min(len(self.y_trajectory),start_idx_right+10)] - self.corners[1][1]))
-            if (self.corners[0][0] > self.x_right_trajectory[start_idx_right]):
-                self.left_the_road.append((self.num_seconds_sim, self.corners[0][0], self.x_right_trajectory[start_idx_right]))
+            closest_point_right = self.find_closest_point_car(self.y_trajectory, self.corners[0][1])
+            closest_point_left = self.find_closest_point_car(self.y_trajectory, self.corners[1][1])
+            if (self.corners[0][0] > self.x_right_trajectory[closest_point_right]):
+                self.left_the_road.append([self.num_seconds_sim, float(self.car_position[0]), float(self.car_position[1]), float(self.theta), float(self.velocity), "Right"])
                 
-            if(self.corners[1][0] < self.x_left_trajectory[start_idx_left]):
-                self.left_the_road.append((self.num_seconds_sim, self.corners[1][0], self.x_left_trajectory[start_idx_left]))
+            if(self.corners[1][0] < self.x_left_trajectory[closest_point_left]):
+                self.left_the_road.append([self.num_seconds_sim, float(self.car_position[0]), float(self.car_position[1]), float(self.theta), float(self.velocity), "Left"])
                 
                 
             self.distance_error.append(self.car_position[0])
@@ -164,10 +166,9 @@ class Car:
             theta += self.velocity * np.tan(self.phi)/WHEELBASE * DELTA_T * self.step_size_look_ahead       
             corners = self.corners_car(car_position, theta, just_front = True)
             
-            start_idx_right = np.searchsorted(self.y_trajectory, corners[0][1], side="left")
-            start_idx_right = np.argmin(np.abs(self.y_trajectory[max(0,start_idx_right-1):min(len(self.y_trajectory),start_idx_right+1)] - corners[0][1]))
-            start_idx_left = np.argmin(np.abs(self.y_trajectory[max(0,start_idx_right-10):min(len(self.y_trajectory),start_idx_right+10)] - corners[1][1])) # -10 and +10 to be computationally faster, as both should have similar values
-            if (corners[0][0] > self.x_right_trajectory[start_idx_right] or corners[1][0] < self.x_left_trajectory[start_idx_left]):
+            closest_point_right = self.find_closest_point_car(self.y_trajectory, self.corners[0][1])
+            closest_point_left = self.find_closest_point_car(self.y_trajectory, self.corners[1][1])
+            if (corners[0][0] > self.x_right_trajectory[closest_point_right] or corners[1][0] < self.x_left_trajectory[closest_point_left]):
                 self.use_lta = 1
                 self.lta_activation = 0
                 return
@@ -176,7 +177,16 @@ class Car:
         if self.lta_activation > 5:
             self.use_lta = 0
         return
-    
+   
+    def find_closest_point_car(self, y_trajectory, corner):
+        start_idx_right = np.searchsorted(y_trajectory, corner, side="left") - 1
+        #Ensure that the idxs are within the trajectory array
+        idx_min = max(0,start_idx_right) 
+        idx_max = min(len(y_trajectory),start_idx_right+2)
+        # Find the closest point to the car between the two values
+        closest_point = np.abs(y_trajectory[idx_min:idx_max] - corner)
+        return idx_min + np.argmin(closest_point)
+ 
     def corners_car(self, car_position, theta, just_front = False):
         corners = []
         num_corners = 2 if just_front else 4
@@ -301,12 +311,12 @@ if __name__ == "__main__":
     left_the_road = []
     given_up = []
     with multiprocessing.Pool() as pool:
-        results = list(pool.imap(run_car_sim, range(1000)))
-    for i, (lr, gu) in enumerate(results):
-        left_the_road.extend((i, lr))
-        given_up.append(gu)
-
-    np.save("left_the_road.npy", left_the_road)
-    np.save("given_up.npy", given_up)
-    print(f"Left the road: {left_the_road}")
-    print(f"Given up: {given_up}")
+        results = list(pool.map(run_car_sim, range(1000)))
+    for i, (left, give_up) in enumerate(results):
+        a = [(i, left)]
+        left_the_road.extend(a)
+        given_up.append(give_up)
+        
+    np.save(f"Task5_results/given_up_straight{MAX_CHANGE_PHI}.npy", given_up)
+    with open(f"Task5_results/left_the_road_straight{MAX_CHANGE_PHI}.pkl", "wb") as f:
+        pickle.dump(left_the_road, f)

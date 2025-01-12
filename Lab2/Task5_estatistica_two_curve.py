@@ -1,6 +1,6 @@
-import matplotlib.pyplot as plt
 import numpy as np
-
+import multiprocessing
+import pickle
 # Constants
 DELTA_T = 0.05                          # Time interval in seconds
 DISPLAY_DELTA = 2 * DELTA_T             # Display update interval in seconds
@@ -12,13 +12,14 @@ FRONT_WIDTH = 1.35                      # Front wheel width in meters
 LANE_WIDTH = 4                          # Lane width in meters
 MIN_VEL = 14
 MAX_VEL = 32
-FUTURE_LOOK_AHEAD = DISPLAY_DELTA       # Future look ahead in seconds
+FUTURE_LOOK_AHEAD = 3*DISPLAY_DELTA        # Future look ahead in seconds
 NUM_STEPS_LOOK_AHEAD = 4
-DISTANCE_THRESHOLD_LTA = 1.5
+DISTANCE_THRESHOLD_LTA = 2
 WINDOW_SIZE_MEAN = 1
-LENGTH_CURVE = 31.4
+LENGTH_CURVE = np.pi * 20
+LENGTH_STRAIGHT = 50
 NOISE_STD = 0.00
-SIM_TIME = 12
+SIM_TIME = 10
 
 # Car wheels positions (Front Right, Front Left, Back Left, Back Right)
 CAR_CORNERS = np.array([(WHEELBASE, -FRONT_WIDTH/2),
@@ -28,12 +29,18 @@ CAR_CORNERS = np.array([(WHEELBASE, -FRONT_WIDTH/2),
 
 SENSOR_POSITIONS = np.array([WHEELBASE, 0])
 
+MAX_CHANGE_PHI = 20
+
+PROBABILITY_TAKING_ACTION = 0.75
+
+np.random.seed(42)
+
 class Car:
-    def __init__(self, velocity):
+    def __init__(self, velocity, phi):
         # CAR Parameters
         self.car_position = (LANE_WIDTH/2, 0)  
         self.theta = np.radians(90)
-        self.phi = np.radians(0)
+        self.phi = np.radians(phi)
         self.velocity = velocity
         
         # Simulation Parameters
@@ -50,9 +57,13 @@ class Car:
         self.right_lane_point = None
         self.distance_error = []
         
-        self.y_trajectory = np.linspace(0,400,4000)
-        self.x_left_trajectory = np.zeros(4000)
+        #MAP LANE LIMITS
+        y_curve = np.linspace(0,LENGTH_CURVE, 2000) 
+        self.y_trajectory = np.concatenate((np.linspace(0,LENGTH_STRAIGHT,LENGTH_STRAIGHT*10), y_curve + LENGTH_STRAIGHT, np.linspace(LENGTH_CURVE+LENGTH_STRAIGHT, LENGTH_CURVE+2*LENGTH_STRAIGHT, LENGTH_STRAIGHT*10)))
+        self.x_left_trajectory = np.concatenate((np.zeros(LENGTH_STRAIGHT*10), 3 * np.sin(y_curve/10), np.zeros(LENGTH_STRAIGHT*10)))
         self.x_right_trajectory = self.x_left_trajectory + LANE_WIDTH
+        # self.y_trajectory = np.linspace(0,100,1000)
+        # self.x_left_trajectory = np.zeros(1000)
         
         # LTA Parameters
         self.use_lta = 0
@@ -65,15 +76,20 @@ class Car:
         self.plot_theta = [self.theta]
         self.plot_middle_point = []
         self.position_plot = [self.car_position]
-    
+        self.plot_lta = [self.use_lta]
+        self.keep_on = False
+        self.left_the_road = []
+        self.given_up = (False, 0, 0,0,0)
+        
     def start_simulator(self):
         self.sensor_position = rotation(SENSOR_POSITIONS, self.theta) + self.car_position
         self.distance_to_lane()
         while SIM_TIME > self.num_seconds_sim:
-            self.num_seconds_sim += DELTA_T
+            if(np.random.random() < PROBABILITY_TAKING_ACTION):
+                self.change_angle(np.radians(np.random.uniform(-MAX_CHANGE_PHI, MAX_CHANGE_PHI)))
+            self.num_seconds_sim += DELTA_T 
             self.time.append(self.num_seconds_sim)
             self.car_position = self.next_car_position()
-
             self.corners = self.corners_car(self.car_position, self.theta)
             self.sensor_position = rotation(SENSOR_POSITIONS, self.theta) + self.car_position
             self.distance_to_lane()
@@ -81,28 +97,40 @@ class Car:
             self.plot_theta.append(self.theta)
             self.plot_phi.append(self.phi)
             self.position_plot.append(self.car_position)
+            
             #LTA controller
             #Error is the orientation from car position to middle lane point - Current orientation
-            if self.middle_lane_point[1] < self.car_position[1]:
-                self.use_lta = -1
             
-            if self.num_seconds_sim < SIM_TIME/3:
-                self.middle_lane_point[0] += LANE_WIDTH/3
-            elif self.num_seconds_sim < 2*SIM_TIME/3:
-                self.middle_lane_point[0] -= LANE_WIDTH/3
+            closest_point_right = self.find_closest_point_car(self.y_trajectory, self.corners[0][1])
+            closest_point_left = self.find_closest_point_car(self.y_trajectory, self.corners[1][1])
+            if (self.corners[0][0] > self.x_right_trajectory[closest_point_right]):
+                self.left_the_road.append([self.num_seconds_sim, float(self.car_position[0]), float(self.car_position[1]), float(self.theta), float(self.velocity), "Right"])
+                
+            if(self.corners[1][0] < self.x_left_trajectory[closest_point_left]):
+                self.left_the_road.append([self.num_seconds_sim, float(self.car_position[0]), float(self.car_position[1]), float(self.theta), float(self.velocity), "Left"])
+                
+            if self.middle_lane_point[1] < self.car_position[1] and self.given_up[0] == False:
+                self.use_lta = -1
+                self.given_up = (True, self.num_seconds_sim, self.car_position[0], self.car_position[1], self.theta)
+                
                 
             self.distance_error.append(self.car_position[0])
             predicted_error = np.arctan2(self.middle_lane_point[1] - self.car_position[1], self.middle_lane_point[0] - self.car_position[0]) - self.theta
-            self.phi = self.controller.pid(predicted_error, limits=(-MAX_ANGLE, MAX_ANGLE))
+            self.plot_lta.append(self.keep_on)
+            
+            if self.use_lta > 0:
+                self.phi = self.controller.pid(predicted_error, limits=(-MAX_ANGLE, MAX_ANGLE))
+                
+            else:
+                self.controller.reset(predicted_error)
                     
-        self.display_final()
 
     def change_velocity(self, increment):
         self.velocity += increment
         self.velocity = np.clip(self.velocity, MIN_VEL, MAX_VEL)
     
-    def change_angle(self, angle_vel):
-        self.phi += angle_vel
+    def change_angle(self, angle):
+        self.phi += angle
         self.phi = np.clip(self.phi, -MAX_ANGLE, MAX_ANGLE)
         
     def next_car_position(self):
@@ -117,7 +145,7 @@ class Car:
             self.theta += 2*np.pi
         
         x = self.car_position[0] + delta_x
-        y = self.car_position[1] + delta_y
+        y =  self.limit_inside_display(self.car_position[1] + delta_y)
         return (x,y)
     
     def get_direction(self):
@@ -138,14 +166,13 @@ class Car:
         car_position = [*self.car_position]
         for _ in range(0, NUM_STEPS_LOOK_AHEAD):
             car_position[0] += self.velocity * np.cos(theta) * DELTA_T * self.step_size_look_ahead
-            car_position[1] = car_position[1] + self.velocity * np.sin(theta) * DELTA_T * self.step_size_look_ahead #self.limit_inside_display(car_position[1] + self.velocity * np.sin(theta) * DELTA_T * self.step_size_look_ahead)
+            car_position[1] = self.limit_inside_display(car_position[1] + self.velocity * np.sin(theta) * DELTA_T * self.step_size_look_ahead)
             theta += self.velocity * np.tan(self.phi)/WHEELBASE * DELTA_T * self.step_size_look_ahead       
             corners = self.corners_car(car_position, theta, just_front = True)
             
-            start_idx_right = np.searchsorted(self.y_trajectory, corners[0][1], side="left")
-            start_idx_right = np.argmin(np.abs(self.y_trajectory[max(0,start_idx_right-1):min(len(self.y_trajectory),start_idx_right+1)] - corners[0][1]))
-            start_idx_left = np.argmin(np.abs(self.y_trajectory[max(0,start_idx_right-10):min(len(self.y_trajectory),start_idx_right+10)] - corners[1][1])) # -10 and +10 to be computationally faster, as both should have similar values
-            if (corners[0][0] > self.x_right_trajectory[start_idx_right] or corners[1][0] < self.x_left_trajectory[start_idx_left]):
+            closest_point_right = self.find_closest_point_car(self.y_trajectory, self.corners[0][1])
+            closest_point_left = self.find_closest_point_car(self.y_trajectory, self.corners[1][1])
+            if (corners[0][0] > self.x_right_trajectory[closest_point_right] or corners[1][0] < self.x_left_trajectory[closest_point_left]):
                 self.use_lta = 1
                 self.lta_activation = 0
                 return
@@ -154,7 +181,16 @@ class Car:
         if self.lta_activation > 5:
             self.use_lta = 0
         return
-    
+   
+    def find_closest_point_car(self, y_trajectory, corner):
+        start_idx_right = np.searchsorted(y_trajectory, corner, side="left") - 1
+        #Ensure that the idxs are within the trajectory array
+        idx_min = max(0,start_idx_right) 
+        idx_max = min(len(y_trajectory),start_idx_right+2)
+        # Find the closest point to the car between the two values
+        closest_point = np.abs(y_trajectory[idx_min:idx_max] - corner)
+        return idx_min + np.argmin(closest_point)
+ 
     def corners_car(self, car_position, theta, just_front = False):
         corners = []
         num_corners = 2 if just_front else 4
@@ -164,7 +200,6 @@ class Car:
             
         return np.array(corners)
         
-
     def find_intersection(self, angle, x_trajectory, y_trajectory):
         sensor_x, sensor_y = self.sensor_position
         x_direction, y_direction = np.cos(angle), np.sin(angle)
@@ -196,7 +231,6 @@ class Car:
 
         return closest_point, closest_dist
 
-
     def distance_to_lane(self):
         right_laser_angle = self.theta + np.pi/5
         left_laser_angle  = self.theta - np.pi/5
@@ -224,85 +258,23 @@ class Car:
         self.middle_lane_point = [(self.left_lane_point[0] + self.right_lane_point[0])/2, (self.left_lane_point[1] + self.right_lane_point[1])/2]
         self.plot_middle_point.append(self.middle_lane_point)
         #self.distance_error.append(self.distance_right[-1] - self.distance_left[-1])
-        
-    def img_display_lta(self, x, y):
-        if self.use_lta == 0:
-            return
-        
-        if self.use_lta == -1:
-            self.ax1.imshow(self.unavailable, extent=[x + 3.5, x + 4.5, y + 6 , y + 7])
-        
-        if self.use_lta == 1:
-            self.ax1.imshow(self.lta_working_img, extent=[x + 2.5, x + 5.5, y + 4.0 , y + 5.5])
-           
-        if self.use_lta == 2: 
-            self.ax1.imshow(self.lta_working_img, extent=[x + 2.5, x + 5.5, y + 4.0 , y + 5.5])
-            self.ax1.imshow(self.warning_img, extent=[x + 3.5, x + 4.5, y + 6 , y + 7])
-            
-    def display_final(self):
-        #figures
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 8))  
-        ax1.plot(self.time, np.degrees(self.plot_theta) - 90, label='Theta')
-        ax1.set_xlabel('Time (s)')
-        ax1.set_ylabel('Theta (degrees)')
-        ax1.set_ylim(-60, 60)
-        ax1.legend(loc='upper left')
-        ax2.plot(self.time, np.degrees(self.plot_phi), label='Phi')
-        max_angle = np.degrees(MAX_ANGLE)
-        ax2.plot([0, self.time[-1]], [max_angle, max_angle], 'k--', label='Max Angle')
-        ax2.plot([0, self.time[-1]], [-max_angle, -max_angle], 'k--', label='Min Angle')
-        ax2.set_xlabel('Time (s)')
-        ax2.set_ylabel('Phi (degrees)')
-        ax2.legend(loc='upper left')
-        ax1.grid()
-        ax2.grid()
-        fig.tight_layout()
-        
-        fig2, (ax3, ax4) = plt.subplots(1, 2, figsize=(15, 8))  
-        ax3.set_xlabel('X Position (m)')
-        ax3.set_ylabel('Y Position (m)')
-        self.create_corners_plot(ax3)
-        position_plot = np.array(self.position_plot)
-        
-        
-        ax3.scatter(*zip(*self.plot_middle_point[1:]), color='g', label='Reference Point')
-        ax3.plot(self.x_left_trajectory[0:-1:30], self.y_trajectory[0:-1:30], 'k--', label='Lane Limit')
-        ax3.plot(self.x_right_trajectory[0:-1:30], self.y_trajectory[0:-1:30], 'k--')
-        ax3.legend(loc='upper left')
-        ax3.set_xlim(LANE_WIDTH/2 - 10, LANE_WIDTH/2 + 10)
-        ax3.set_ylim(position_plot[:,1].min() - 5, position_plot[:,1].max() + 5)
-        ax4.plot(self.time[1:], self.distance_error, label="Car's Position")
-        reference = [
-                (5*LANE_WIDTH/6) if t < SIM_TIME/3 
-                else (LANE_WIDTH/6 if t < 2*SIM_TIME/3 
-                else LANE_WIDTH/2)
-                for t in self.time[1:]
-        ]
-        ax4.plot(self.time[1:], reference, 'g--', label='Reference')
-        ax4.set_xlabel('Time (s)')
-        ax4.set_ylabel('X Position Lane (m)')
-        ax4.legend(loc='upper left')
-        ax4.set_xlim(self.time[1], self.time[-1])
-        ax4.set_ylim(-8, 8)
-        ax4.grid()
-        fig2.tight_layout()
-        np.save('time.npy', self.time[1:])
-        np.save('car_position.npy', self.distance_error)
-        np.save('reference.npy', reference)
-        plt.show()
-        
-       
-    def create_corners_plot(self, ax3):
-        for i in range(1, len(self.position_plot), 5):
-            corners = self.corners_car(self.position_plot[i], self.plot_theta[i])
-            chassis_car = np.append(corners, [corners[0]], axis=0)
-            ax3.plot(chassis_car[:,0],chassis_car[:,1], color='blue', alpha=0.5)
-            
-        corners = self.corners_car(self.position_plot[i], self.plot_theta[i])
-        chassis_car = np.append(corners, [corners[0]], axis=0)
-        ax3.plot(chassis_car[:,0],chassis_car[:,1], color='blue', label="Car's Chassis", alpha=0.5)
-              
 
+    def get_left_road(self):
+        return self.left_the_road
+    
+    def get_given_up(self):
+        return self.given_up
+    
+    def limit_inside_display(self,value):
+        min_value = 15
+        max_value = LENGTH_CURVE + 2*LENGTH_STRAIGHT - 15
+        if value > max_value:
+            value = min_value + (value - max_value)
+        elif value < min_value:
+            value = max_value - (min_value - value)
+        
+        return value
+    
 class controller:
     def __init__(self, kp, ki, kd):
         self.kp = kp
@@ -331,9 +303,25 @@ class controller:
 def rotation(point, theta):
     return np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]]) @ point
     
-    
-if __name__ == "__main__":
-    car = Car(20)        
+  
+def run_car_sim(_):
+    velocity = np.random.randint(MIN_VEL, MAX_VEL + 1)
+    phi = 0
+    car = Car(velocity, phi)
     car.start_simulator()
-
+    return car.get_left_road(), car.get_given_up()
+  
+if __name__ == "__main__":
+    left_the_road = []
+    given_up = []
+    with multiprocessing.Pool() as pool:
+        results = list(pool.map(run_car_sim, range(1000)))
+    for i, (left, give_up) in enumerate(results):
+        a = [(i, left)]
+        left_the_road.extend(a)
+        given_up.append((give_up))
+        
+    np.save(f"Task5_results/given_up_two_curves{MAX_CHANGE_PHI}.npy", given_up)
+    with open(f"Task5_results/left_the_road_two_curves{MAX_CHANGE_PHI}.pkl", "wb") as f:
+        pickle.dump(left_the_road, f)
 

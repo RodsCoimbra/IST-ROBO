@@ -176,6 +176,7 @@ class Car:
         corners = self.corners_car(self.position_plot[i], self.theta_list[i])
         chassis_car = np.append(corners, [corners[0]], axis=0)
         plt.plot(chassis_car[:,0],chassis_car[:,1], color='blue', label="Car's Chassis") 
+        
        
 def rotation(point, theta):
     return np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]]) @ point

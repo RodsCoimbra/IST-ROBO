@@ -15,11 +15,12 @@ FRONT_WIDTH = 1.35                      # Front wheel width in meters
 LANE_WIDTH = 4                          # Lane width in meters
 MIN_VEL = 14
 MAX_VEL = 32
-FUTURE_LOOK_AHEAD = DISPLAY_DELTA       # Future look ahead in seconds
+FUTURE_LOOK_AHEAD = 3*DISPLAY_DELTA       # Future look ahead in seconds
 NUM_STEPS_LOOK_AHEAD = 4
-DISTANCE_THRESHOLD_LTA = 1.5
+DISTANCE_THRESHOLD_LTA = 2
 WINDOW_SIZE_MEAN = 1
-LENGTH_CURVE = 31.4
+LENGTH_CURVE = np.pi * 10
+LENGTH_STRAIGHT = 60
 NOISE_STD = 0.00
 SIM_TIME = 6
 
@@ -34,7 +35,7 @@ SENSOR_POSITIONS = np.array([WHEELBASE, 0])
 class Car:
     def __init__(self, velocity):
         # CAR Parameters
-        self.car_position = (LANE_WIDTH/2, -35)  
+        self.car_position = (LANE_WIDTH/2, 0)  
         self.theta = np.radians(90)
         self.phi = 0
         self.velocity = velocity
@@ -54,8 +55,8 @@ class Car:
         
         #MAP LANE LIMITS
         y_curve = np.linspace(0,LENGTH_CURVE, 1000) 
-        self.y_trajectory = np.concatenate((np.linspace(-45,0,450), y_curve, np.linspace(LENGTH_CURVE, LENGTH_CURVE+80, 800)))
-        self.x_left_trajectory = np.concatenate((np.zeros(450), 2 * np.sin(y_curve/10), np.zeros(800)))
+        self.y_trajectory = np.concatenate((np.linspace(0,LENGTH_STRAIGHT,LENGTH_STRAIGHT*10), y_curve + LENGTH_STRAIGHT, np.linspace(LENGTH_CURVE+LENGTH_STRAIGHT, LENGTH_CURVE+2*LENGTH_STRAIGHT, LENGTH_STRAIGHT*10)))
+        self.x_left_trajectory = np.concatenate((np.zeros(LENGTH_STRAIGHT*10), 2 * np.sin(y_curve/10), np.zeros(LENGTH_STRAIGHT*10)))
         self.x_right_trajectory = self.x_left_trajectory + LANE_WIDTH
         
         # LTA Parameters
@@ -161,21 +162,21 @@ class Car:
         y = self.car_position[1] + delta_y
         #y = self.limit_inside_display(self.car_position[1] + delta_y)
         return (x,y)
-     
-    # def limit_inside_display(self,value):
-    #     min_value = -35
-    #     max_value = LENGTH_CURVE + 35
-    #     if value > max_value:
-    #         value = min_value + (value - max_value)
-    #     elif value < min_value:
-    #         value = max_value - (min_value - value)
-        
-    #     return value
     
     def get_direction(self):
         dx = self.velocity * np.cos(self.theta)
         dy = self.velocity * np.sin(self.theta)
         return dx, dy
+    
+    def find_closest_point_car(self, y_trajectory, corner):
+        start_idx_right = np.searchsorted(y_trajectory, corner, side="left") - 1
+        #Ensure that the idxs are within the trajectory array
+        idx_min = max(0,start_idx_right) 
+        idx_max = min(len(y_trajectory),start_idx_right+2)
+        # Find the closest point to the car between the two values
+        closest_point = np.abs(y_trajectory[idx_min:idx_max] - corner)
+        return idx_min + np.argmin(closest_point)
+    
     
     def danger_zone(self):
         if self.use_lta == -1:
@@ -194,10 +195,9 @@ class Car:
             theta += self.velocity * np.tan(self.phi)/WHEELBASE * DELTA_T * self.step_size_look_ahead       
             corners = self.corners_car(car_position, theta, just_front = True)
             
-            start_idx_right = np.searchsorted(self.y_trajectory, corners[0][1], side="left")
-            start_idx_right = np.argmin(np.abs(self.y_trajectory[max(0,start_idx_right-1):min(len(self.y_trajectory),start_idx_right+1)] - corners[0][1]))
-            start_idx_left = np.argmin(np.abs(self.y_trajectory[max(0,start_idx_right-10):min(len(self.y_trajectory),start_idx_right+10)] - corners[1][1])) # -10 and +10 to be computationally faster, as both should have similar values
-            if (corners[0][0] > self.x_right_trajectory[start_idx_right] or corners[1][0] < self.x_left_trajectory[start_idx_left]):
+            closest_point_right = self.find_closest_point_car(self.y_trajectory, self.corners[0][1])
+            closest_point_left = self.find_closest_point_car(self.y_trajectory, self.corners[1][1])
+            if (corners[0][0] > self.x_right_trajectory[closest_point_right] or corners[1][0] < self.x_left_trajectory[closest_point_left]):
                 self.use_lta = 1
                 self.lta_activation = 0
                 return
@@ -220,7 +220,7 @@ class Car:
     def find_intersection(self, angle, x_trajectory, y_trajectory):
         sensor_x, sensor_y = self.sensor_position
         x_direction, y_direction = np.cos(angle), np.sin(angle)
-        dist = float('inf')
+        closest_dist = float('inf')
         closest_point = None
 
         # To improve performance, we only consider the segment of the trajectory that is in front of the sensor and to a maximum of 10 meters ahead
@@ -231,10 +231,10 @@ class Car:
         for x1, x2, y1, y2 in segments:
             sx, sy = x2 - x1, y2 - y1
             denom = x_direction * sy - y_direction * sx
-            if abs(denom) == 0:  # Parallel lines
+            if abs(denom) < 1e-9:  # Parallel lines
                 continue
 
-            # Calculate intersection
+            # Calculate intersection parameters
             t = (sx * (sensor_y - y1) - sy * (sensor_x - x1)) / denom
             u = (x_direction * (sensor_y - y1) - y_direction * (sensor_x - x1)) / denom
 
@@ -242,10 +242,11 @@ class Car:
             if t >= 0 and 0 <= u <= 1:
                 ix, iy = sensor_x + t * x_direction, sensor_y + t * y_direction
                 dist = np.hypot(ix - sensor_x, iy - sensor_y)
-                closest_point = (ix, iy)
-                break
+                if dist < closest_dist:
+                    closest_dist = dist
+                    closest_point = (ix, iy)
 
-        return closest_point, dist
+        return closest_point, closest_dist
 
 
     def distance_to_lane(self):
