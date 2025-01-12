@@ -38,32 +38,45 @@ close all
 % Define parameters
 v = 20;              % constant velocity
 L = 2.36;              % wheelbase
-theta_r = 0;        % assume straight-line motion (cos(theta_r) = 1)
-DELTA_T = 0.01; 
-Kp= 0.2;
-Ki = 0.01 * DELTA_T;
-Kd = 0.03 / DELTA_T;
+Kp= 1.8;
+Ki = 0.001;
+Kd = 0.08;
 
 % Open-loop transfer function G(s)
 s = tf('s');
-G = (v^2 * cos(theta_r)) / (L * s^2);
+G = v / (L * s);
 
 % PID Controller C(s)
-C = Kp + Ki/s + Kd * s
+C = Kp + Ki/s + Kd * s;
 
-% Bode Plot
-% figure;
-% bode(C * G);
-% title('Bode Diagram of Open-Loop System');
-% 
-% % Nyquist plot
+LTA = C *G;
+
+%Bode Plot
+figure;
+bode(LTA);
+title('Bode Diagram of Open-Loop System');
+
+figure;
+sys = feedback(LTA, 1);
+step(sys)
+figure;
+t = 0:0.01:2*pi;       % Time vector from 0 to 10 seconds with 0.01s steps
+omega = 1;           % Frequency of cosine wave (rad/s)
+u = 3 * cos(omega * t);  % Input signal
+[y, t_out] = lsim(sys, u, t);  % Simulate the response
+
+plot(t, u, '--', 'DisplayName', 'Input (cos)');  % Plot input signal
+hold on;
+plot(t_out, y, 'DisplayName', 'System Response'); % Plot system response
+xlabel('Time (s)');
+ylabel('Amplitude');
+legend;
+grid on;
+% Nyquist plot
 % figure;
 % nyquist(C * G);
 % title('Nyquist Plot of Open-Loop System');
 % figure;
 % rlocus(C*G)
 
-%controlSystemDesigner(G, C)
-
-E = (8.8845*(s+0.06616)*(s+0.0005038))/s
-
+% controlSystemDesigner(G,C)
